@@ -1,0 +1,59 @@
+{
+  "project": "Irrigation Simulation",
+  "description": "Single-player agent-based irrigation game emulating upstream/downstream dynamics grounded in Hohokam and O'odham irrigation literature.",
+  "agents": {
+    "student_agent": true,
+    "ai_agents_count": 11,
+    "strategies": ["always_cooperate", "always_defect", "conditional_coop", "reputation_sensitive", "drought_defect"]
+  },
+  "canal": {
+    "topology": "linear",
+    "segments": 5,
+    "conveyance_loss": {
+      "default": 0.06,
+      "range": [0.02, 0.12]
+    }
+  },
+  "simulation": {
+    "seasons_per_run": 10,
+    "water_supply": {
+      "normal": 100,
+      "drought_min": 40,
+      "drought_max": 60,
+      "drought_probability": 0.10
+    },
+    "seed_default": 42
+  },
+  "mechanics": {
+    "withdrawals": {
+      "choices": { "low": 5, "medium": 12, "high": 25 },
+      "max_value": 30
+    },
+    "maintenance": {
+      "cost_person_days": 1,
+      "threshold_for_success": 0.40,
+      "contribution_threshold_seasons": 3
+    },
+    "reputation": {
+      "base": 1.0,
+      "alpha": 0.10,
+      "beta": 0.20
+    },
+    "detection_probability": 0.20,
+    "failure": {
+      "maintenance_deficit_threshold": 0.40,
+      "failure_probability_increase_per_season": 0.10,
+      "rebuild_cost_person_seasons": 6
+    },
+    "yield": {
+      "full_allotment_yield": 20,
+      "diminishing_returns_above_allotment": true
+    }
+  },
+  "outputs": {
+    "csv_schema": {
+      "agent_season": ["run_id", "season", "agent_id", "role", "position", "strategy", "water_received", "withdrawal", "maintenance_contributed", "yield", "reputation", "wealth", "detected_defection", "sanction", "canal_failure_flag"],
+      "run_summary": ["run_id", "scenario", "seed", "n_agents", "n_contributors_mean", "total_yield", "gini_yield", "student_final_wealth", "n_failures", "drought_events", "notes"]
+    }
+  }
+}
