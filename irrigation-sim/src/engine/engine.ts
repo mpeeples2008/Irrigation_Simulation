@@ -18,7 +18,7 @@ import {
 } from "./types";
 import { calculateGini, clamp, nextRandom, roundTo, toCsv } from "./utils";
 
-const canonicalSpec = canonicalSpecJson as CanonicalSpec;
+const canonicalSpec = canonicalSpecJson as unknown as CanonicalSpec;
 
 export const AGENT_SEASON_COLUMNS = [...canonicalSpec.outputs.csv_schema.agent_season];
 export const RUN_SUMMARY_COLUMNS = [...canonicalSpec.outputs.csv_schema.run_summary];
@@ -547,7 +547,20 @@ export function exportAgentsCSV(runResult: RunResult): string {
  * Exports run summary output as CSV with canonical schema.
  */
 export function exportRunSummaryCSV(runResult: RunResult): string {
-  return toCsv(RUN_SUMMARY_COLUMNS, [runResult.summary]);
+  const row = {
+    run_id: runResult.summary.run_id,
+    scenario: runResult.summary.scenario,
+    seed: runResult.summary.seed,
+    n_agents: runResult.summary.n_agents,
+    n_contributors_mean: runResult.summary.n_contributors_mean,
+    total_yield: runResult.summary.total_yield,
+    gini_yield: runResult.summary.gini_yield,
+    student_final_wealth: runResult.summary.student_final_wealth,
+    n_failures: runResult.summary.n_failures,
+    drought_events: runResult.summary.drought_events,
+    notes: runResult.summary.notes
+  };
+  return toCsv(RUN_SUMMARY_COLUMNS, [row]);
 }
 
 /**
