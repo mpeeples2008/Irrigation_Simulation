@@ -1,3 +1,3 @@
 ﻿run_id,scenario,seed,n_agents,n_contributors_mean,total_yield,gini_yield,student_final_wealth,n_failures,drought_events,notes
-run-42,Scenario 1 - Weak Rules,42,12,8,1886.5,0.2475,164.5,1,1,Sample mock run for documentation.
+run-42,Weak Rules,42,6,4.75,574.6,0.1894,102,0,2,Outcome: loss
 

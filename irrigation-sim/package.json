@@ -6,7 +6,9 @@
     "dev": "vite",
     "build": "vite build",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "sweep": "ts-node --transpile-only --compiler-options \"{\\\"module\\\":\\\"commonjs\\\",\\\"moduleResolution\\\":\\\"node\\\"}\" scripts/sweep.ts",
+    "sweep:quick": "npm run sweep -- --seeds=20 --coop=0.3,0.7 --comp=0.3,0.7 --variance=15,25 --position=0,2,5"
   },
   "dependencies": {
     "chart.js": "4.4.7",

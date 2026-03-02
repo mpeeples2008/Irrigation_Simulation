@@ -1,30 +1,17 @@
-export type StrategyName =
-  | "always_cooperate"
-  | "always_defect"
-  | "conditional_coop"
-  | "reputation_sensitive"
-  | "drought_defect";
-
-export type WithdrawalChoice = "low" | "medium" | "high";
-export type MaintenanceChoice = "contribute" | "skip";
-export type TopologyType = "linear" | "branch";
+export type StrategyName = "reciprocal" | "upstream_pressure" | "downstream_retaliation";
+export type TopologyType = "linear";
 export type AgentRole = "student" | "ai";
+export type OutcomeState = "in_progress" | "win" | "loss";
+export type TurnPhase = "water" | "maintenance";
 
 export interface PlayerDecision {
-  withdrawalChoice: WithdrawalChoice;
-  maintenanceChoice: MaintenanceChoice;
+  withdrawal?: number;
+  maintenance?: number;
 }
 
 export interface AgentDecision extends PlayerDecision {
-  withdrawalAmount: number;
   maintenanceContributed: boolean;
-}
-
-export interface WaterSupplyConfig {
-  normal: number;
-  droughtMin: number;
-  droughtMax: number;
-  droughtProbability: number;
+  tookExtra: boolean;
 }
 
 export interface SimulationPreset {
@@ -32,26 +19,20 @@ export interface SimulationPreset {
   seasonsPerRun: number;
   nAgents: number;
   topology: TopologyType;
-  branchSplitIndex: number;
-  branchRatio: number;
   conveyanceLoss: number;
-  sanctionAmount: number;
+  baseSupply: number;
+  supplyVariance: number;
+  rainfallVariabilityEnabled: boolean;
   studentPosition: number;
-  strategyMix: StrategyName[];
-  withdrawalChoices: Record<WithdrawalChoice, number>;
-  withdrawalMaxValue: number;
-  maintenanceCost: number;
-  maintenanceThresholdForSuccess: number;
-  contributionThresholdSeasons: number;
-  reputationBase: number;
-  reputationAlpha: number;
-  reputationBeta: number;
-  detectionProbability: number;
-  failureProbabilityIncreasePerSeason: number;
-  rebuildCostPersonSeasons: number;
+  fairTake: number;
+  maxTake: number;
+  fairMaintenance: number;
+  maxMaintenance: number;
+  aiCooperativeness: number;
+  aiCompetitiveness: number;
   fullAllotmentYield: number;
-  diminishingReturnsAboveAllotment: boolean;
-  waterSupply: WaterSupplyConfig;
+  canalDecay: number;
+  criticalStressSeasons: number;
 }
 
 export interface AgentState {
@@ -62,6 +43,33 @@ export interface AgentState {
   reputation: number;
   wealth: number;
   cumulativeYield: number;
+  waterStress: number;
+}
+
+export interface StatusMetrics {
+  canalCondition: number;
+  downstreamStress: number;
+  groupTrust: number;
+}
+
+export interface StatusPoint extends StatusMetrics {
+  season: number;
+}
+
+export interface RevealedWithdrawal {
+  agent_id: string;
+  role: AgentRole;
+  position: number;
+  withdrawal: number;
+  above_fair: number;
+}
+
+export interface PendingSeasonData {
+  season: number;
+  supply: number;
+  lowSupply: boolean;
+  withdrawals: Record<string, number>;
+  revealedWithdrawals: RevealedWithdrawal[];
 }
 
 export interface SimulationState {
@@ -73,12 +81,21 @@ export interface SimulationState {
   rngState: number;
   agents: AgentState[];
   history: SeasonRecord[];
+  turnPhase: TurnPhase;
+  pendingSeason?: PendingSeasonData;
   pendingStudentDecision?: PlayerDecision;
-  lastContributorFraction: number;
-  consecutiveDeficitSeasons: number;
+  lastCooperationRate: number;
+  criticalStressStreak: number;
   nFailures: number;
-  droughtEvents: number;
+  lowSupplyEvents: number;
   contributorCountSum: number;
+  status: StatusMetrics;
+  statusHistory: StatusPoint[];
+  lastStatusDelta: StatusMetrics;
+  retaliationPressure: number;
+  outcome: OutcomeState;
+  lastNarrative: string;
+  lastFeedback: string;
   notes: string;
 }
 
@@ -124,6 +141,11 @@ export interface SeasonResult {
   totalYield: number;
   giniYield: number;
   records: SeasonRecord[];
+  narrative: string;
+  feedback: string;
+  status: StatusMetrics;
+  statusDelta: StatusMetrics;
+  outcome: OutcomeState;
   state: SimulationState;
 }
 
@@ -142,60 +164,5 @@ export interface RunOptions {
   scenarioName?: string;
   notes?: string;
   playerDecisions?: PlayerDecision[];
-}
-
-export interface CanonicalSpec {
-  agents: {
-    ai_agents_count: number;
-    strategies: StrategyName[];
-  };
-  canal: {
-    topology: TopologyType;
-    conveyance_loss: {
-      default: number;
-      range: [number, number];
-    };
-  };
-  simulation: {
-    seasons_per_run: number;
-    seed_default: number;
-    water_supply: {
-      normal: number;
-      drought_min: number;
-      drought_max: number;
-      drought_probability: number;
-    };
-  };
-  mechanics: {
-    withdrawals: {
-      choices: Record<WithdrawalChoice, number>;
-      max_value: number;
-    };
-    maintenance: {
-      cost_person_days: number;
-      threshold_for_success: number;
-      contribution_threshold_seasons: number;
-    };
-    reputation: {
-      base: number;
-      alpha: number;
-      beta: number;
-    };
-    detection_probability: number;
-    failure: {
-      maintenance_deficit_threshold: number;
-      failure_probability_increase_per_season: number;
-      rebuild_cost_person_seasons: number;
-    };
-    yield: {
-      full_allotment_yield: number;
-      diminishing_returns_above_allotment: boolean;
-    };
-  };
-  outputs: {
-    csv_schema: {
-      agent_season: string[];
-      run_summary: string[];
-    };
-  };
+  studentPosition?: number;
 }

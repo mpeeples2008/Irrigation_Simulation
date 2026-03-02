@@ -1,9 +1,7 @@
-import canonicalSpecJson from "../../spec/spec.json";
 import {
   AgentDecision,
   AgentState,
-  CanonicalSpec,
-  MaintenanceChoice,
+  OutcomeState,
   PlayerDecision,
   RunOptions,
   RunResult,
@@ -12,268 +10,176 @@ import {
   SeasonResult,
   SimulationPreset,
   SimulationState,
-  StrategyName,
-  TopologyType,
-  WithdrawalChoice
+  StatusMetrics
 } from "./types";
 import { calculateGini, clamp, nextRandom, roundTo, toCsv } from "./utils";
 
-const canonicalSpec = canonicalSpecJson as unknown as CanonicalSpec;
+export const AGENT_SEASON_COLUMNS = [
+  "run_id",
+  "season",
+  "agent_id",
+  "role",
+  "position",
+  "strategy",
+  "water_received",
+  "withdrawal",
+  "maintenance_contributed",
+  "yield",
+  "reputation",
+  "wealth",
+  "detected_defection",
+  "sanction",
+  "canal_failure_flag"
+];
 
-export const AGENT_SEASON_COLUMNS = [...canonicalSpec.outputs.csv_schema.agent_season];
-export const RUN_SUMMARY_COLUMNS = [...canonicalSpec.outputs.csv_schema.run_summary];
+export const RUN_SUMMARY_COLUMNS = [
+  "run_id",
+  "scenario",
+  "seed",
+  "n_agents",
+  "n_contributors_mean",
+  "total_yield",
+  "gini_yield",
+  "student_final_wealth",
+  "n_failures",
+  "drought_events",
+  "notes"
+];
 
-const DEFAULT_PLAYER_DECISION: PlayerDecision = {
-  withdrawalChoice: "medium",
-  maintenanceChoice: "contribute"
+const DEFAULT_PRESET: SimulationPreset = {
+  scenario: "Simple Survival",
+  seasonsPerRun: 8,
+  nAgents: 6,
+  topology: "linear",
+  conveyanceLoss: 0.08,
+  baseSupply: 90,
+  supplyVariance: 24,
+  rainfallVariabilityEnabled: true,
+  studentPosition: 2,
+  fairTake: 12,
+  maxTake: 24,
+  fairMaintenance: 1,
+  maxMaintenance: 3,
+  aiCooperativeness: 0.5,
+  aiCompetitiveness: 0.5,
+  fullAllotmentYield: 16,
+  canalDecay: 6,
+  criticalStressSeasons: 4
 };
 
+const DEFAULT_STATUS: StatusMetrics = {
+  canalCondition: 72,
+  downstreamStress: 24,
+  groupTrust: 68
+};
+
+const ZERO_STATUS: StatusMetrics = {
+  canalCondition: 0,
+  downstreamStress: 0,
+  groupTrust: 0
+};
+
+const AI_STRATEGIES: Array<AgentState["strategy"]> = [
+  "upstream_pressure",
+  "upstream_pressure",
+  "reciprocal",
+  "downstream_retaliation",
+  "downstream_retaliation"
+];
+
 /**
- * Builds a normalized simulation preset from canonical spec defaults and runtime overrides.
+ * Normalizes runtime preset overrides into a complete simplified preset.
  */
 export function normalizePreset(presetInput: object = {}): SimulationPreset {
-  const base = buildDefaultPreset(canonicalSpec);
   const input = presetInput as Record<string, unknown>;
-  const fullPresetCandidate = input as Partial<SimulationPreset>;
-  const snakeCase = input as Record<string, unknown>;
-  const nested = input as {
-    mechanics?: Record<string, unknown>;
-    simulation?: Record<string, unknown>;
-    canal?: Record<string, unknown>;
-  };
-
-  const withdrawalChoices = {
-    low: pickNumber(
-      fullPresetCandidate.withdrawalChoices?.low,
-      (snakeCase.withdrawals as Record<string, number> | undefined)?.low,
-      base.withdrawalChoices.low
-    ),
-    medium: pickNumber(
-      fullPresetCandidate.withdrawalChoices?.medium,
-      (snakeCase.withdrawals as Record<string, number> | undefined)?.medium,
-      base.withdrawalChoices.medium
-    ),
-    high: pickNumber(
-      fullPresetCandidate.withdrawalChoices?.high,
-      (snakeCase.withdrawals as Record<string, number> | undefined)?.high,
-      base.withdrawalChoices.high
-    )
-  };
-
-  const nAgents = Math.max(
-    3,
-    Math.floor(
-      pickNumber(
-        fullPresetCandidate.nAgents,
-        (snakeCase.n_agents as number | undefined) ?? undefined,
-        base.nAgents
-      )
-    )
+  const fairTake = Math.max(1, pickNumber(input.fairTake, input.fair_take, DEFAULT_PRESET.fairTake));
+  const fairMaintenance = Math.max(
+    0.1,
+    pickNumber(input.fairMaintenance, input.fair_maintenance, DEFAULT_PRESET.fairMaintenance)
   );
-  const strategyMix = normalizeStrategyMix(
-    fullPresetCandidate.strategyMix ??
-      ((snakeCase.strategy_mix as StrategyName[] | undefined) ?? undefined),
-    nAgents - 1,
-    base.strategyMix
+  const maxTake = Math.max(fairTake, pickNumber(input.maxTake, input.max_take, DEFAULT_PRESET.maxTake));
+  const maxMaintenance = Math.max(
+    fairMaintenance,
+    pickNumber(input.maxMaintenance, input.max_maintenance, DEFAULT_PRESET.maxMaintenance)
+  );
+  const aiCooperativeness = clamp(
+    pickNumber(input.aiCooperativeness, input.ai_cooperativeness, DEFAULT_PRESET.aiCooperativeness),
+    0,
+    1
+  );
+  const aiCompetitiveness = clamp(
+    pickNumber(input.aiCompetitiveness, input.ai_competitiveness, DEFAULT_PRESET.aiCompetitiveness),
+    0,
+    1
   );
 
   return {
-    scenario: pickString(fullPresetCandidate.scenario, snakeCase.scenario, base.scenario),
-    seasonsPerRun: pickNumber(
-      fullPresetCandidate.seasonsPerRun,
-      (nested.simulation as Record<string, number> | undefined)?.seasons_per_run,
-      base.seasonsPerRun
-    ),
-    nAgents,
-    topology: normalizeTopology(
-      fullPresetCandidate.topology,
-      (snakeCase.topology as TopologyType | undefined) ?? undefined,
-      (nested.canal as Record<string, TopologyType> | undefined)?.topology,
-      base.topology
-    ),
-    branchSplitIndex: Math.max(
+    scenario: pickString(input.scenario, DEFAULT_PRESET.scenario),
+    seasonsPerRun: Math.max(
       1,
-      Math.floor(
-        pickNumber(
-          fullPresetCandidate.branchSplitIndex,
-          snakeCase.branch_split_index,
-          base.branchSplitIndex
-        )
-      )
+      Math.floor(pickNumber(input.seasonsPerRun, input.seasons_per_run, DEFAULT_PRESET.seasonsPerRun))
     ),
-    branchRatio: clamp(
-      pickNumber(fullPresetCandidate.branchRatio, snakeCase.branch_ratio, base.branchRatio),
-      0.1,
-      0.9
-    ),
+    nAgents: Math.max(3, Math.floor(pickNumber(input.nAgents, input.n_agents, DEFAULT_PRESET.nAgents))),
+    topology: "linear",
     conveyanceLoss: clamp(
-      pickNumber(
-        fullPresetCandidate.conveyanceLoss,
-        snakeCase.conveyance_loss,
-        (nested.canal as Record<string, number> | undefined)?.conveyance_loss,
-        base.conveyanceLoss
-      ),
-      0.0,
-      0.95
+      pickNumber(input.conveyanceLoss, input.conveyance_loss, DEFAULT_PRESET.conveyanceLoss),
+      0.01,
+      0.35
     ),
-    sanctionAmount: Math.max(
+    baseSupply: Math.max(10, pickNumber(input.baseSupply, input.base_supply, DEFAULT_PRESET.baseSupply)),
+    supplyVariance: Math.max(
       0,
-      pickNumber(fullPresetCandidate.sanctionAmount, snakeCase.sanction_amount, base.sanctionAmount)
+      pickNumber(input.supplyVariance, input.supply_variance, DEFAULT_PRESET.supplyVariance)
+    ),
+    rainfallVariabilityEnabled: pickBoolean(
+      input.rainfallVariabilityEnabled,
+      input.rainfall_variability_enabled,
+      DEFAULT_PRESET.rainfallVariabilityEnabled
     ),
     studentPosition: Math.max(
       0,
-      Math.floor(
-        pickNumber(
-          fullPresetCandidate.studentPosition,
-          snakeCase.student_position,
-          Math.floor((base.nAgents - 1) / 2)
-        )
-      )
+      Math.floor(pickNumber(input.studentPosition, input.student_position, DEFAULT_PRESET.studentPosition))
     ),
-    strategyMix,
-    withdrawalChoices,
-    withdrawalMaxValue: pickNumber(
-      fullPresetCandidate.withdrawalMaxValue,
-      ((nested.mechanics?.withdrawals as Record<string, number> | undefined)?.max_value as
-        | number
-        | undefined) ?? undefined,
-      base.withdrawalMaxValue
+    fairTake,
+    maxTake,
+    fairMaintenance,
+    maxMaintenance,
+    aiCooperativeness,
+    aiCompetitiveness,
+    fullAllotmentYield: Math.max(
+      1,
+      pickNumber(input.fullAllotmentYield, input.full_allotment_yield, DEFAULT_PRESET.fullAllotmentYield)
     ),
-    maintenanceCost: pickNumber(
-      fullPresetCandidate.maintenanceCost,
-      snakeCase.maintenance_cost,
-      ((nested.mechanics?.maintenance as Record<string, number> | undefined)?.cost_person_days as
-        | number
-        | undefined) ?? undefined,
-      base.maintenanceCost
-    ),
-    maintenanceThresholdForSuccess: clamp(
-      pickNumber(
-        fullPresetCandidate.maintenanceThresholdForSuccess,
-        snakeCase.maintenance_threshold_for_success,
-        ((nested.mechanics?.maintenance as Record<string, number> | undefined)?.threshold_for_success as
-          | number
-          | undefined) ?? undefined,
-        base.maintenanceThresholdForSuccess
-      ),
-      0,
-      1
-    ),
-    contributionThresholdSeasons: Math.max(
+    canalDecay: Math.max(0, pickNumber(input.canalDecay, input.canal_decay, DEFAULT_PRESET.canalDecay)),
+    criticalStressSeasons: Math.max(
       1,
       Math.floor(
         pickNumber(
-          fullPresetCandidate.contributionThresholdSeasons,
-          ((nested.mechanics?.maintenance as Record<string, number> | undefined)?.contribution_threshold_seasons as
-            | number
-            | undefined) ?? undefined,
-          base.contributionThresholdSeasons
+          input.criticalStressSeasons,
+          input.critical_stress_seasons,
+          DEFAULT_PRESET.criticalStressSeasons
         )
       )
-    ),
-    reputationBase: pickNumber(
-      fullPresetCandidate.reputationBase,
-      ((nested.mechanics?.reputation as Record<string, number> | undefined)?.base as
-        | number
-        | undefined) ?? undefined,
-      base.reputationBase
-    ),
-    reputationAlpha: pickNumber(
-      fullPresetCandidate.reputationAlpha,
-      ((nested.mechanics?.reputation as Record<string, number> | undefined)?.alpha as
-        | number
-        | undefined) ?? undefined,
-      base.reputationAlpha
-    ),
-    reputationBeta: pickNumber(
-      fullPresetCandidate.reputationBeta,
-      ((nested.mechanics?.reputation as Record<string, number> | undefined)?.beta as
-        | number
-        | undefined) ?? undefined,
-      base.reputationBeta
-    ),
-    detectionProbability: clamp(
-      pickNumber(
-        fullPresetCandidate.detectionProbability,
-        (nested.mechanics as Record<string, number> | undefined)?.detection_probability,
-        base.detectionProbability
-      ),
-      0,
-      1
-    ),
-    failureProbabilityIncreasePerSeason: clamp(
-      pickNumber(
-        fullPresetCandidate.failureProbabilityIncreasePerSeason,
-        ((nested.mechanics?.failure as Record<string, number> | undefined)?.failure_probability_increase_per_season as
-          | number
-          | undefined) ?? undefined,
-        base.failureProbabilityIncreasePerSeason
-      ),
-      0,
-      1
-    ),
-    rebuildCostPersonSeasons: pickNumber(
-      fullPresetCandidate.rebuildCostPersonSeasons,
-      ((nested.mechanics?.failure as Record<string, number> | undefined)?.rebuild_cost_person_seasons as
-        | number
-        | undefined) ?? undefined,
-      base.rebuildCostPersonSeasons
-    ),
-    fullAllotmentYield: pickNumber(
-      fullPresetCandidate.fullAllotmentYield,
-      ((nested.mechanics?.yield as Record<string, number> | undefined)?.full_allotment_yield as
-        | number
-        | undefined) ?? undefined,
-      base.fullAllotmentYield
-    ),
-    diminishingReturnsAboveAllotment: pickBoolean(
-      fullPresetCandidate.diminishingReturnsAboveAllotment,
-      ((nested.mechanics?.yield as Record<string, boolean> | undefined)
-        ?.diminishing_returns_above_allotment as boolean | undefined) ?? undefined,
-      base.diminishingReturnsAboveAllotment
-    ),
-    waterSupply: {
-      normal: pickNumber(
-        fullPresetCandidate.waterSupply?.normal,
-        (nested.simulation?.water_supply as Record<string, number> | undefined)?.normal,
-        base.waterSupply.normal
-      ),
-      droughtMin: pickNumber(
-        fullPresetCandidate.waterSupply?.droughtMin,
-        snakeCase.drought_min,
-        (nested.simulation?.water_supply as Record<string, number> | undefined)?.drought_min,
-        base.waterSupply.droughtMin
-      ),
-      droughtMax: pickNumber(
-        fullPresetCandidate.waterSupply?.droughtMax,
-        snakeCase.drought_max,
-        (nested.simulation?.water_supply as Record<string, number> | undefined)?.drought_max,
-        base.waterSupply.droughtMax
-      ),
-      droughtProbability: clamp(
-        pickNumber(
-          fullPresetCandidate.waterSupply?.droughtProbability,
-          snakeCase.drought_probability,
-          (nested.simulation?.water_supply as Record<string, number> | undefined)?.drought_probability,
-          base.waterSupply.droughtProbability
-        ),
-        0,
-        1
-      )
-    }
+    )
   };
 }
 
 /**
- * Creates an initial simulation state for step-by-step play.
+ * Creates a fresh simulation state for step-by-step play.
  */
-export function createInitialState(presetInput: object = {}, seed = canonicalSpec.simulation.seed_default, options: RunOptions = {}): SimulationState {
+export function createInitialState(
+  presetInput: object = {},
+  seed = 42,
+  options: RunOptions = {}
+): SimulationState {
   const preset = normalizePreset(presetInput);
   const nAgents = preset.nAgents;
-  const studentPosition = Math.floor(clamp(preset.studentPosition, 0, nAgents - 1));
-  const agents: AgentState[] = [];
-  let aiIndex = 0;
+  const configuredPosition =
+    options.studentPosition !== undefined ? options.studentPosition : preset.studentPosition;
+  const studentPosition = Math.floor(clamp(configuredPosition, 0, nAgents - 1));
 
+  const agents: AgentState[] = [];
+  let aiCounter = 0;
   for (let position = 0; position < nAgents; position += 1) {
     if (position === studentPosition) {
       agents.push({
@@ -281,48 +187,66 @@ export function createInitialState(presetInput: object = {}, seed = canonicalSpe
         role: "student",
         position,
         strategy: "student_controlled",
-        reputation: preset.reputationBase,
+        reputation: 1,
         wealth: 0,
-        cumulativeYield: 0
+        cumulativeYield: 0,
+        waterStress: 0
       });
       continue;
     }
     agents.push({
-      agentId: `ai_${aiIndex + 1}`,
+      agentId: `ai_${aiCounter + 1}`,
       role: "ai",
       position,
-      strategy: preset.strategyMix[aiIndex % preset.strategyMix.length],
-      reputation: preset.reputationBase,
+      strategy: AI_STRATEGIES[aiCounter % AI_STRATEGIES.length],
+      reputation: 1,
       wealth: 0,
-      cumulativeYield: 0
+      cumulativeYield: 0,
+      waterStress: 0
     });
-    aiIndex += 1;
+    aiCounter += 1;
   }
 
-  const runId = options.runId ?? `run-${seed}`;
-  const rngSeed = (Math.floor(seed) >>> 0) || 1;
   return {
-    runId,
+    runId: options.runId ?? `run-${seed}`,
     scenario: options.scenarioName ?? preset.scenario,
     seed,
     preset,
     currentSeason: 0,
-    rngState: rngSeed,
+    rngState: (Math.floor(seed) >>> 0) || 1,
     agents,
     history: [],
-    lastContributorFraction: 1,
-    consecutiveDeficitSeasons: 0,
+    turnPhase: "water",
+    pendingSeason: undefined,
+    pendingStudentDecision: undefined,
+    lastCooperationRate: 0.65,
+    criticalStressStreak: 0,
     nFailures: 0,
-    droughtEvents: 0,
+    lowSupplyEvents: 0,
     contributorCountSum: 0,
+    status: { ...DEFAULT_STATUS },
+    statusHistory: [
+      {
+        season: 0,
+        ...DEFAULT_STATUS
+      }
+    ],
+    lastStatusDelta: { ...ZERO_STATUS },
+    retaliationPressure: 0.2,
+    outcome: "in_progress",
+    lastNarrative: "Start by balancing your own take with shared maintenance.",
+    lastFeedback: "",
     notes: options.notes ?? ""
   };
 }
 
 /**
- * Advances simulation by one season using the pending student decision on state.
+ * Advances simulation by one season.
  */
 export function stepSeason(state: SimulationState): SeasonResult {
+  if (state.outcome !== "in_progress") {
+    throw new Error("Simulation already finished.");
+  }
   if (state.currentSeason >= state.preset.seasonsPerRun) {
     throw new Error("All seasons have already been completed.");
   }
@@ -330,183 +254,306 @@ export function stepSeason(state: SimulationState): SeasonResult {
     throw new Error("pendingStudentDecision must be set before calling stepSeason.");
   }
 
-  const seasonNumber = state.currentSeason + 1;
-  const agents = [...state.agents].sort((a, b) => a.position - b.position);
-  let rngState = state.rngState;
+  const season = state.currentSeason + 1;
+  const sortedAgents = [...state.agents].sort((a, b) => a.position - b.position);
 
-  const droughtRoll = nextRandom(rngState);
-  rngState = droughtRoll.nextState;
-  const drought = droughtRoll.value < state.preset.waterSupply.droughtProbability;
-  let supply = state.preset.waterSupply.normal;
-  if (drought) {
-    const droughtSupplyRoll = nextRandom(rngState);
-    rngState = droughtSupplyRoll.nextState;
-    supply =
-      state.preset.waterSupply.droughtMin +
-      droughtSupplyRoll.value * (state.preset.waterSupply.droughtMax - state.preset.waterSupply.droughtMin);
+  if (state.turnPhase === "water") {
+    if (typeof state.pendingStudentDecision.withdrawal !== "number") {
+      throw new Error("Water phase requires a student withdrawal decision.");
+    }
+
+    let rngState = state.rngState;
+    const supplyDraw = nextRandom(rngState);
+    rngState = supplyDraw.nextState;
+    const centered = supplyDraw.value - 0.5;
+    const supply = state.preset.rainfallVariabilityEnabled
+      ? roundTo(state.preset.baseSupply + centered * state.preset.supplyVariance, 4)
+      : roundTo(state.preset.baseSupply, 4);
+    const lowSupply = state.preset.rainfallVariabilityEnabled
+      ? supply < state.preset.baseSupply - state.preset.supplyVariance * 0.2
+      : false;
+
+    const withdrawals: Record<string, number> = {};
+    for (const agent of sortedAgents) {
+      const proposed =
+        agent.role === "student"
+          ? { withdrawal: state.pendingStudentDecision.withdrawal, maintenance: state.preset.fairMaintenance }
+          : decideAiWaterDecision(agent, state);
+      const sanitized = sanitizeDecision(proposed, state.preset);
+      withdrawals[agent.agentId] = sanitized.withdrawal;
+    }
+
+    const revealedWithdrawals = sortedAgents.map((agent) => {
+      const withdrawal = roundTo(withdrawals[agent.agentId] ?? 0, 4);
+      return {
+        agent_id: agent.agentId,
+        role: agent.role,
+        position: agent.position,
+        withdrawal,
+        above_fair: roundTo(withdrawal - state.preset.fairTake, 4)
+      };
+    });
+
+    const nextState: SimulationState = {
+      ...state,
+      rngState,
+      turnPhase: "maintenance",
+      pendingSeason: {
+        season,
+        supply,
+        lowSupply,
+        withdrawals,
+        revealedWithdrawals
+      },
+      pendingStudentDecision: undefined,
+      lastNarrative: "Water choices are revealed. Decide maintenance after seeing who took above fair.",
+      lastFeedback: "Phase 1 complete: adjust maintenance to respond to visible extraction this season."
+    };
+
+    return {
+      season,
+      supply,
+      drought: lowSupply,
+      canalFailure: false,
+      contributorCount: 0,
+      contributorFraction: 0,
+      totalYield: 0,
+      giniYield: 0,
+      records: [],
+      narrative: nextState.lastNarrative,
+      feedback: nextState.lastFeedback,
+      status: nextState.status,
+      statusDelta: { ...ZERO_STATUS },
+      outcome: nextState.outcome,
+      state: nextState
+    };
   }
-  supply = roundTo(supply, 4);
 
-  const meanReputation =
-    agents.reduce((sum, agent) => sum + agent.reputation, 0) / Math.max(1, agents.length);
+  if (!state.pendingSeason) {
+    throw new Error("Maintenance phase requires pendingSeason data.");
+  }
+  if (typeof state.pendingStudentDecision.maintenance !== "number") {
+    throw new Error("Maintenance phase requires a student maintenance decision.");
+  }
 
+  const supply = state.pendingSeason.supply;
+  const lowSupply = state.pendingSeason.lowSupply;
   const decisions: Record<string, AgentDecision> = {};
-  for (const agent of agents) {
-    const baseDecision =
+  for (const agent of sortedAgents) {
+    const proposed =
       agent.role === "student"
-        ? state.pendingStudentDecision
-        : decideAiDecision(agent, {
-            drought,
-            lastContributorFraction: state.lastContributorFraction,
-            meanReputation,
-            threshold: state.preset.maintenanceThresholdForSuccess
-          });
-    decisions[agent.agentId] = withDecisionAmounts(baseDecision, state.preset);
+        ? {
+            withdrawal: state.pendingSeason.withdrawals[agent.agentId],
+            maintenance: state.pendingStudentDecision.maintenance
+          }
+        : decideAiMaintenanceDecision(agent, state, state.pendingSeason.withdrawals);
+    decisions[agent.agentId] = sanitizeDecision(proposed, state.preset);
   }
 
-  const contributorCount = Object.values(decisions).filter((d) => d.maintenanceContributed).length;
-  const contributorFraction = contributorCount / agents.length;
+  const contributorCount = Object.values(decisions).filter((decision) => decision.maintenanceContributed).length;
+  const contributorFraction = contributorCount / sortedAgents.length;
 
-  const failureEval = evaluateFailure(
-    contributorFraction,
-    state.consecutiveDeficitSeasons,
-    state.preset,
-    rngState
+  const totalMaintenance = Object.values(decisions).reduce((sum, decision) => sum + decision.maintenance, 0);
+  const maintenanceRatio = clamp(totalMaintenance / (state.preset.fairMaintenance * sortedAgents.length), 0, 1.5);
+
+  const totalExtra = Object.values(decisions).reduce(
+    (sum, decision) => sum + Math.max(0, decision.withdrawal - state.preset.fairTake),
+    0
   );
-  rngState = failureEval.nextRngState;
+  const extraPressure = clamp(totalExtra / (sortedAgents.length * state.preset.fairTake), 0, 2);
 
-  const receivedMap = routeWater(
-    agents,
-    decisions,
-    supply,
-    state.preset,
-    failureEval.failureThisSeason
-  );
-
-  const rebuildShare = failureEval.failureThisSeason
-    ? state.preset.rebuildCostPersonSeasons / agents.length
-    : 0;
+  const waterMap = routeWaterLinear(sortedAgents, decisions, supply, state.preset.conveyanceLoss);
 
   const records: SeasonRecord[] = [];
   const updatedAgents: AgentState[] = [];
-  const seasonYields: number[] = [];
-
-  for (const agent of agents) {
+  const yields: number[] = [];
+  for (const agent of sortedAgents) {
     const decision = decisions[agent.agentId];
-    const detection = detectDefection(
-      decision,
-      agent.position,
-      agents.length,
-      state.preset,
-      rngState
-    );
-    rngState = detection.nextRngState;
+    const waterReceived = roundTo(waterMap[agent.agentId] ?? 0, 4);
+    const yieldValue = calculateYield(waterReceived, state.preset);
+    const waterDeficit = Math.max(0, state.preset.fairTake - waterReceived);
+    const nextStress = roundTo(clamp(agent.waterStress * 0.55 + waterDeficit * 2.3, 0, 100), 4);
+    const nextReputation = updateReputation(agent.reputation, decision.maintenanceContributed, decision.tookExtra, 0.06, 0.08);
+    const nextWealth = roundTo(agent.wealth + yieldValue - decision.maintenance, 4);
 
-    const waterReceived = roundTo(receivedMap[agent.agentId] ?? 0, 4);
-    const seasonYield = calculateYield(waterReceived, state.preset);
-    const reputation = updateReputation(
-      agent.reputation,
-      decision.maintenanceContributed,
-      detection.detectedDefection,
-      state.preset.reputationAlpha,
-      state.preset.reputationBeta
-    );
-    const maintenanceCost = decision.maintenanceContributed ? state.preset.maintenanceCost : 0;
-    const wealth = roundTo(
-      agent.wealth + seasonYield - maintenanceCost - detection.sanction - rebuildShare,
-      4
-    );
-
-    seasonYields.push(seasonYield);
     updatedAgents.push({
       ...agent,
-      reputation,
-      wealth,
-      cumulativeYield: roundTo(agent.cumulativeYield + seasonYield, 4)
+      waterStress: nextStress,
+      reputation: nextReputation,
+      wealth: nextWealth,
+      cumulativeYield: roundTo(agent.cumulativeYield + yieldValue, 4)
     });
+    yields.push(yieldValue);
     records.push({
       run_id: state.runId,
-      season: seasonNumber,
+      season,
       agent_id: agent.agentId,
       role: agent.role,
       position: agent.position,
       strategy: agent.strategy,
       water_received: waterReceived,
-      withdrawal: decision.withdrawalAmount,
+      withdrawal: decision.withdrawal,
       maintenance_contributed: decision.maintenanceContributed ? 1 : 0,
-      yield: seasonYield,
-      reputation,
-      wealth,
-      detected_defection: detection.detectedDefection ? 1 : 0,
-      sanction: roundTo(detection.sanction, 4),
-      canal_failure_flag: failureEval.failureThisSeason ? 1 : 0
+      yield: yieldValue,
+      reputation: nextReputation,
+      wealth: nextWealth,
+      detected_defection: 0,
+      sanction: 0,
+      canal_failure_flag: 0
     });
   }
 
-  const totalYield = roundTo(seasonYields.reduce((sum, y) => sum + y, 0), 4);
-  const giniYield = calculateGini(seasonYields);
+  const studentDecision = decisions.student;
+  if (!studentDecision) {
+    throw new Error("Student decision missing for maintenance phase.");
+  }
+
+  const nextStatus = updateStatusMetrics(state.status, {
+    agents: sortedAgents,
+    waterMap,
+    maintenanceRatio,
+    extraPressure,
+    studentDecision,
+    preset: state.preset
+  });
+  const studentSelfishness = computeStudentSelfishness(studentDecision, state.preset);
+  const nextRetaliationPressure = computeRetaliationPressure({
+    previous: state.retaliationPressure,
+    studentSelfishness,
+    extraPressure,
+    downstreamStress: nextStatus.downstreamStress,
+    groupTrust: nextStatus.groupTrust
+  });
+  const statusDelta = {
+    canalCondition: roundTo(nextStatus.canalCondition - state.status.canalCondition, 4),
+    downstreamStress: roundTo(nextStatus.downstreamStress - state.status.downstreamStress, 4),
+    groupTrust: roundTo(nextStatus.groupTrust - state.status.groupTrust, 4)
+  };
+
+  const canalFailure = nextStatus.canalCondition <= 10;
+  if (canalFailure) {
+    for (const record of records) {
+      record.canal_failure_flag = 1;
+    }
+  }
+
+  const criticalStressStreak = nextStatus.downstreamStress >= 90 ? state.criticalStressStreak + 1 : 0;
+  let outcome: OutcomeState = "in_progress";
+  if (canalFailure || criticalStressStreak >= state.preset.criticalStressSeasons) {
+    outcome = "loss";
+  } else if (season >= state.preset.seasonsPerRun) {
+    outcome =
+      nextStatus.canalCondition >= 40 && nextStatus.downstreamStress <= 60 && nextStatus.groupTrust >= 40
+        ? "win"
+        : "loss";
+  }
+
+  const narrative = buildNarrative({
+    maintenanceRatio,
+    extraPressure,
+    downstreamStress: nextStatus.downstreamStress,
+    canalCondition: nextStatus.canalCondition,
+    groupTrust: nextStatus.groupTrust,
+    outcome
+  });
+  const feedback = buildStudentFeedback(studentDecision, state.preset, statusDelta);
+
+  const totalYield = roundTo(yields.reduce((sum, value) => sum + value, 0), 4);
+  const giniYield = calculateGini(yields);
 
   const nextState: SimulationState = {
     ...state,
-    currentSeason: seasonNumber,
-    rngState,
+    currentSeason: season,
     agents: updatedAgents,
     history: [...state.history, ...records],
+    turnPhase: "water",
+    pendingSeason: undefined,
     pendingStudentDecision: undefined,
-    lastContributorFraction: contributorFraction,
-    consecutiveDeficitSeasons: failureEval.updatedDeficitStreak,
-    nFailures: state.nFailures + (failureEval.failureThisSeason ? 1 : 0),
-    droughtEvents: state.droughtEvents + (drought ? 1 : 0),
-    contributorCountSum: state.contributorCountSum + contributorCount
+    lastCooperationRate: contributorFraction,
+    criticalStressStreak,
+    nFailures: state.nFailures + (canalFailure ? 1 : 0),
+    lowSupplyEvents: state.lowSupplyEvents + (lowSupply ? 1 : 0),
+    contributorCountSum: state.contributorCountSum + contributorCount,
+    status: nextStatus,
+    statusHistory: [
+      ...state.statusHistory,
+      {
+        season,
+        ...nextStatus
+      }
+    ],
+    lastStatusDelta: statusDelta,
+    retaliationPressure: nextRetaliationPressure,
+    outcome,
+    lastNarrative: narrative,
+    lastFeedback: feedback
   };
 
   return {
-    season: seasonNumber,
+    season,
     supply,
-    drought,
-    canalFailure: failureEval.failureThisSeason,
+    drought: lowSupply,
+    canalFailure,
     contributorCount,
     contributorFraction: roundTo(contributorFraction, 4),
     totalYield,
     giniYield,
     records,
+    narrative,
+    feedback,
+    status: nextStatus,
+    statusDelta,
+    outcome,
     state: nextState
   };
 }
 
 /**
- * Runs all seasons and returns full run output.
+ * Runs full simulation from season 1 to completion.
  */
 export function runSimulation(preset: object, seed: number, options: RunOptions = {}): RunResult {
   let state = createInitialState(preset, seed, options);
-  const seasonResults: SeasonResult[] = [];
-  const scriptedDecisions = options.playerDecisions ?? [];
+  const scripted = options.playerDecisions ?? [];
+  const seasons: SeasonResult[] = [];
 
   for (let i = 0; i < state.preset.seasonsPerRun; i += 1) {
-    const decision = scriptedDecisions[i] ?? DEFAULT_PLAYER_DECISION;
-    const result = stepSeason({
+    if (state.outcome !== "in_progress") {
+      break;
+    }
+    const planned = scripted[i] ?? {};
+    const waterPhase = stepSeason({
       ...state,
-      pendingStudentDecision: decision
+      pendingStudentDecision: {
+        withdrawal:
+          typeof planned.withdrawal === "number" ? planned.withdrawal : state.preset.fairTake
+      }
     });
-    seasonResults.push(result);
-    state = result.state;
+    state = waterPhase.state;
+    if (state.outcome !== "in_progress") {
+      break;
+    }
+    const maintenancePhase = stepSeason({
+      ...state,
+      pendingStudentDecision: {
+        maintenance:
+          typeof planned.maintenance === "number" ? planned.maintenance : state.preset.fairMaintenance
+      }
+    });
+    seasons.push(maintenancePhase);
+    state = maintenancePhase.state;
   }
 
-  const summary = buildRunSummary(state);
   return {
     runId: state.runId,
     scenario: state.scenario,
     seed: state.seed,
     records: state.history,
-    summary,
-    seasons: seasonResults,
+    summary: buildRunSummary(state),
+    seasons,
     finalState: state
   };
 }
 
-/**
- * Creates a RunResult from current state history (useful for incremental UI play).
- */
 export function buildRunResultFromState(state: SimulationState): RunResult {
   return {
     runId: state.runId,
@@ -519,9 +566,6 @@ export function buildRunResultFromState(state: SimulationState): RunResult {
   };
 }
 
-/**
- * Exports per-agent seasonal output as CSV with canonical schema.
- */
 export function exportAgentsCSV(runResult: RunResult): string {
   const rows = runResult.records.map((record) => ({
     run_id: record.run_id,
@@ -543,9 +587,6 @@ export function exportAgentsCSV(runResult: RunResult): string {
   return toCsv(AGENT_SEASON_COLUMNS, rows);
 }
 
-/**
- * Exports run summary output as CSV with canonical schema.
- */
 export function exportRunSummaryCSV(runResult: RunResult): string {
   const row = {
     run_id: runResult.summary.run_id,
@@ -564,309 +605,334 @@ export function exportRunSummaryCSV(runResult: RunResult): string {
 }
 
 /**
- * Calculates per-agent water receipt for current season.
+ * Routes water head-to-tail in a linear canal.
  */
-export function routeWater(
-  agents: AgentState[],
-  decisions: Record<string, AgentDecision>,
-  supply: number,
-  preset: SimulationPreset,
-  canalFailure: boolean
-): Record<string, number> {
-  const sorted = [...agents].sort((a, b) => a.position - b.position);
-  const effectiveLoss = clamp(preset.conveyanceLoss * (canalFailure ? 1.5 : 1), 0, 0.95);
-  if (preset.topology === "branch") {
-    return routeWaterBranch(sorted, decisions, supply, effectiveLoss, preset.branchSplitIndex, preset.branchRatio);
-  }
-  return routeWaterLinear(sorted, decisions, supply, effectiveLoss);
-}
-
 export function routeWaterLinear(
   agents: AgentState[],
   decisions: Record<string, AgentDecision>,
   supply: number,
   lossRate: number
 ): Record<string, number> {
+  const sorted = [...agents].sort((a, b) => a.position - b.position);
   const received: Record<string, number> = {};
   let flow = Math.max(0, supply);
-  for (let i = 0; i < agents.length; i += 1) {
+  for (let i = 0; i < sorted.length; i += 1) {
     if (i > 0) {
       flow *= 1 - lossRate;
     }
-    const request = decisions[agents[i].agentId]?.withdrawalAmount ?? 0;
-    const got = Math.min(flow, Math.max(0, request));
-    received[agents[i].agentId] = roundTo(got, 4);
-    flow = Math.max(0, flow - got);
+    const request = decisions[sorted[i].agentId]?.withdrawal ?? 0;
+    const taken = Math.min(flow, Math.max(0, request));
+    received[sorted[i].agentId] = roundTo(taken, 4);
+    flow = Math.max(0, flow - taken);
   }
   return received;
 }
 
-export function routeWaterBranch(
-  agents: AgentState[],
-  decisions: Record<string, AgentDecision>,
-  supply: number,
-  lossRate: number,
-  splitIndex: number,
-  branchRatio: number
-): Record<string, number> {
-  const received: Record<string, number> = {};
-  const safeSplit = clamp(Math.floor(splitIndex), 1, Math.max(1, agents.length - 2));
-  const trunk = agents.filter((a) => a.position <= safeSplit);
-  const remainder = agents.filter((a) => a.position > safeSplit);
-  const branchA: AgentState[] = [];
-  const branchB: AgentState[] = [];
-  for (let i = 0; i < remainder.length; i += 1) {
-    if (i % 2 === 0) {
-      branchA.push(remainder[i]);
-    } else {
-      branchB.push(remainder[i]);
-    }
-  }
-
-  const trunkResult = processChain(trunk, decisions, supply, lossRate, false);
-  Object.assign(received, trunkResult.received);
-
-  const ratio = clamp(branchRatio, 0.1, 0.9);
-  const flowA = trunkResult.remainingFlow * ratio;
-  const flowB = trunkResult.remainingFlow * (1 - ratio);
-  const aResult = processChain(branchA, decisions, flowA, lossRate, true);
-  const bResult = processChain(branchB, decisions, flowB, lossRate, true);
-  Object.assign(received, aResult.received, bResult.received);
-  return received;
-}
-
-/**
- * Piecewise linear yield function with optional diminishing returns.
- */
 export function calculateYield(waterReceived: number, preset: SimulationPreset): number {
-  const allotment = preset.withdrawalChoices.medium;
-  const baseSlope = preset.fullAllotmentYield / Math.max(1, allotment);
-  if (waterReceived <= allotment) {
+  const fairTake = preset.fairTake;
+  const baseSlope = preset.fullAllotmentYield / Math.max(1, fairTake);
+  if (waterReceived <= fairTake) {
     return roundTo(Math.max(0, waterReceived) * baseSlope, 4);
   }
-  if (!preset.diminishingReturnsAboveAllotment) {
-    return roundTo(Math.max(0, waterReceived) * baseSlope, 4);
-  }
-  const above = waterReceived - allotment;
-  return roundTo(preset.fullAllotmentYield + above * baseSlope * 0.5, 4);
+  const above = waterReceived - fairTake;
+  return roundTo(preset.fullAllotmentYield + above * baseSlope * 0.35, 4);
 }
 
 export function updateReputation(
   previous: number,
   contributed: boolean,
-  detectedDefection: boolean,
+  tookExtra: boolean,
   alpha: number,
   beta: number
 ): number {
-  let reputation = previous;
+  let next = previous;
   if (contributed) {
-    reputation += alpha;
+    next += alpha;
   }
-  if (detectedDefection) {
-    reputation -= beta;
+  if (tookExtra) {
+    next -= beta;
   }
-  return roundTo(clamp(reputation, 0, 2), 4);
+  return roundTo(clamp(next, 0, 2), 4);
 }
 
-export function detectDefection(
-  decision: AgentDecision,
-  position: number,
-  nAgents: number,
-  preset: SimulationPreset,
-  rngState: number
-): { detectedDefection: boolean; sanction: number; nextRngState: number } {
-  const defection = decision.maintenanceChoice === "skip" || decision.withdrawalChoice === "high";
-  if (!defection) {
-    return { detectedDefection: false, sanction: 0, nextRngState: rngState };
-  }
-  const visibilityFactor = 1 + (position / Math.max(1, nAgents - 1)) * 0.5;
-  const pDetect = clamp(preset.detectionProbability * visibilityFactor, 0, 1);
-  const draw = nextRandom(rngState);
+function sanitizeDecision(decision: PlayerDecision, preset: SimulationPreset): AgentDecision {
+  const rawWithdrawal =
+    typeof decision.withdrawal === "number" ? decision.withdrawal : preset.fairTake;
+  const rawMaintenance =
+    typeof decision.maintenance === "number" ? decision.maintenance : preset.fairMaintenance;
+  const withdrawal = roundTo(clamp(rawWithdrawal, 0, preset.maxTake), 4);
+  const maintenance = roundTo(clamp(rawMaintenance, 0, preset.maxMaintenance), 4);
   return {
-    detectedDefection: draw.value < pDetect,
-    sanction: draw.value < pDetect ? preset.sanctionAmount : 0,
-    nextRngState: draw.nextState
+    withdrawal,
+    maintenance,
+    maintenanceContributed: maintenance >= preset.fairMaintenance * 0.85,
+    tookExtra: withdrawal > preset.fairTake + 0.01
   };
 }
 
-export function evaluateFailure(
-  contributorFraction: number,
-  currentDeficitStreak: number,
-  preset: SimulationPreset,
-  rngState: number
-): { failureThisSeason: boolean; updatedDeficitStreak: number; nextRngState: number } {
-  const isDeficit = contributorFraction < preset.maintenanceThresholdForSuccess;
-  const updatedDeficitStreak = isDeficit ? currentDeficitStreak + 1 : 0;
+function decideAiWaterDecision(agent: AgentState, state: SimulationState): PlayerDecision {
+  const fairTake = state.preset.fairTake;
+  const trust = state.status.groupTrust;
+  const downstreamStress = state.status.downstreamStress;
+  const retaliation = state.retaliationPressure;
+  const coop = state.preset.aiCooperativeness;
+  const comp = state.preset.aiCompetitiveness;
+  const takeEscalation = retaliation * (2 + comp * 2.5);
 
-  if (!isDeficit || updatedDeficitStreak < preset.contributionThresholdSeasons) {
-    return {
-      failureThisSeason: false,
-      updatedDeficitStreak,
-      nextRngState: rngState
-    };
+  let withdrawal = fairTake;
+  switch (agent.strategy) {
+    case "upstream_pressure":
+      withdrawal = trust < 55 ? fairTake + 5 + takeEscalation : fairTake + 2 + takeEscalation;
+      break;
+    case "downstream_retaliation":
+      withdrawal =
+        agent.waterStress > 22 || downstreamStress > 58 || retaliation > 0.45
+          ? fairTake + 4 + takeEscalation
+          : fairTake + takeEscalation * 0.5;
+      break;
+    case "reciprocal":
+      withdrawal =
+        state.lastCooperationRate >= 0.6 && retaliation < 0.7
+          ? fairTake + takeEscalation * 0.35
+          : fairTake + 3 + takeEscalation;
+      break;
+    default:
+      withdrawal = fairTake;
+      break;
   }
 
-  const scale = updatedDeficitStreak - preset.contributionThresholdSeasons + 1;
-  const failureProbability = clamp(scale * preset.failureProbabilityIncreasePerSeason, 0, 1);
-  const draw = nextRandom(rngState);
+  // Global standards: cooperativeness pulls toward fairness/help, competitiveness pulls toward extraction.
+  withdrawal = withdrawal + comp * 2.6 - coop * 2.2;
+
   return {
-    failureThisSeason: draw.value < failureProbability,
-    updatedDeficitStreak,
-    nextRngState: draw.nextState
+    withdrawal
+  };
+}
+
+function decideAiMaintenanceDecision(
+  agent: AgentState,
+  state: SimulationState,
+  withdrawals: Record<string, number>
+): PlayerDecision {
+  const fairMaintenance = state.preset.fairMaintenance;
+  const fairTake = state.preset.fairTake;
+  const downstreamStress = state.status.downstreamStress;
+  const retaliation = state.retaliationPressure;
+  const coop = state.preset.aiCooperativeness;
+  const comp = state.preset.aiCompetitiveness;
+
+  const ownWithdrawal = withdrawals[agent.agentId] ?? fairTake;
+  const studentWithdrawal = withdrawals.student ?? fairTake;
+  const meanWithdrawal =
+    Object.values(withdrawals).reduce((sum, value) => sum + value, 0) /
+    Math.max(1, Object.keys(withdrawals).length);
+  const highTakingPressure = Math.max(0, (meanWithdrawal - fairTake) / Math.max(1, fairTake));
+  const studentOvertake = Math.max(0, (studentWithdrawal - fairTake) / Math.max(1, fairTake));
+  const ownOvertake = Math.max(0, (ownWithdrawal - fairTake) / Math.max(1, fairTake));
+
+  let maintenance = fairMaintenance;
+  switch (agent.strategy) {
+    case "upstream_pressure":
+      maintenance = fairMaintenance * (0.55 - retaliation * 0.25);
+      break;
+    case "downstream_retaliation":
+      maintenance =
+        downstreamStress > 60 || studentOvertake > 0.3
+          ? fairMaintenance * (0.35 - retaliation * 0.2)
+          : fairMaintenance * (0.95 - retaliation * 0.25);
+      break;
+    case "reciprocal":
+      maintenance =
+        state.lastCooperationRate >= 0.6 && studentOvertake < 0.2
+          ? fairMaintenance * (1.05 - retaliation * 0.2)
+          : fairMaintenance * (0.55 - retaliation * 0.25);
+      break;
+    default:
+      maintenance = fairMaintenance;
+      break;
+  }
+
+  maintenance =
+    maintenance * (1 + coop * 0.45 - comp * 0.45) -
+    fairMaintenance * (studentOvertake * 0.35 + highTakingPressure * 0.2 + ownOvertake * 0.15);
+
+  return {
+    withdrawal: ownWithdrawal,
+    maintenance
+  };
+}
+
+function updateStatusMetrics(
+  previous: StatusMetrics,
+  context: {
+    agents: AgentState[];
+    waterMap: Record<string, number>;
+    maintenanceRatio: number;
+    extraPressure: number;
+    studentDecision: AgentDecision;
+    preset: SimulationPreset;
+  }
+): StatusMetrics {
+  const tailAgents = [...context.agents]
+    .sort((a, b) => b.position - a.position)
+    .slice(0, 2);
+  const tailMeanWater =
+    tailAgents.reduce((sum, agent) => sum + (context.waterMap[agent.agentId] ?? 0), 0) /
+    Math.max(1, tailAgents.length);
+  const downstreamDeficit = Math.max(0, context.preset.fairTake - tailMeanWater);
+
+  const studentWithdrawalGap =
+    (context.studentDecision.withdrawal - context.preset.fairTake) /
+    Math.max(1, context.preset.fairTake);
+  const studentMaintenanceGap =
+    (context.studentDecision.maintenance - context.preset.fairMaintenance) /
+    Math.max(0.1, context.preset.fairMaintenance);
+  const studentTrustEffect = clamp(-studentWithdrawalGap * 12 + studentMaintenanceGap * 9, -10, 8);
+  const lowMaintenancePenalty = context.maintenanceRatio < 0.8 ? (0.8 - context.maintenanceRatio) * 8 : 0;
+
+  const canalCondition = clamp(
+    previous.canalCondition +
+      context.maintenanceRatio * 13 -
+      context.extraPressure * 11 -
+      context.preset.canalDecay -
+      lowMaintenancePenalty,
+    0,
+    100
+  );
+  const downstreamStress = clamp(
+    previous.downstreamStress +
+      downstreamDeficit * 1.6 +
+      context.extraPressure * 7.5 -
+      context.maintenanceRatio * 8 +
+      lowMaintenancePenalty * 0.4,
+    0,
+    100
+  );
+  const groupTrust = clamp(
+    previous.groupTrust +
+      context.maintenanceRatio * 8 -
+      context.extraPressure * 15 +
+      studentTrustEffect,
+    0,
+    100
+  );
+
+  return {
+    canalCondition: roundTo(canalCondition, 4),
+    downstreamStress: roundTo(downstreamStress, 4),
+    groupTrust: roundTo(groupTrust, 4)
   };
 }
 
 function buildRunSummary(state: SimulationState): RunSummaryRecord {
   const totalYield = roundTo(state.history.reduce((sum, record) => sum + record.yield, 0), 4);
-  const giniYield = calculateGini(state.agents.map((agent) => agent.cumulativeYield));
   const student = state.agents.find((agent) => agent.role === "student");
   return {
     run_id: state.runId,
     scenario: state.scenario,
     seed: state.seed,
     n_agents: state.agents.length,
-    n_contributors_mean: roundTo(state.contributorCountSum / Math.max(1, state.currentSeason), 4),
+    n_contributors_mean: roundTo(
+      state.contributorCountSum / Math.max(1, state.currentSeason),
+      4
+    ),
     total_yield: totalYield,
-    gini_yield: giniYield,
+    gini_yield: calculateGini(state.agents.map((agent) => agent.cumulativeYield)),
     student_final_wealth: roundTo(student?.wealth ?? 0, 4),
     n_failures: state.nFailures,
-    drought_events: state.droughtEvents,
-    notes: state.notes
+    drought_events: state.lowSupplyEvents,
+    notes: state.notes || `Outcome: ${state.outcome}`
   };
 }
 
-function decideAiDecision(
-  agent: AgentState,
-  context: {
-    drought: boolean;
-    lastContributorFraction: number;
-    meanReputation: number;
-    threshold: number;
+function buildNarrative(input: {
+  maintenanceRatio: number;
+  extraPressure: number;
+  downstreamStress: number;
+  canalCondition: number;
+  groupTrust: number;
+  outcome: OutcomeState;
+}): string {
+  if (input.outcome === "win") {
+    return "Group survival succeeded: fairer withdrawals and maintenance coordination held together.";
   }
-): PlayerDecision {
-  switch (agent.strategy) {
-    case "always_cooperate":
-      return { withdrawalChoice: "medium", maintenanceChoice: "contribute" };
-    case "always_defect":
-      return { withdrawalChoice: "high", maintenanceChoice: "skip" };
-    case "conditional_coop":
-      return context.lastContributorFraction >= context.threshold
-        ? { withdrawalChoice: "medium", maintenanceChoice: "contribute" }
-        : { withdrawalChoice: "high", maintenanceChoice: "skip" };
-    case "reputation_sensitive":
-      return agent.reputation >= 1 && context.meanReputation >= 1
-        ? { withdrawalChoice: "medium", maintenanceChoice: "contribute" }
-        : { withdrawalChoice: "high", maintenanceChoice: "skip" };
-    case "drought_defect":
-      if (context.drought) {
-        return { withdrawalChoice: "high", maintenanceChoice: "skip" };
-      }
-      return context.lastContributorFraction >= context.threshold
-        ? { withdrawalChoice: "medium", maintenanceChoice: "contribute" }
-        : { withdrawalChoice: "high", maintenanceChoice: "skip" };
-    default:
-      return { ...DEFAULT_PLAYER_DECISION };
+  if (input.outcome === "loss") {
+    return "Group survival failed: either canal condition collapsed or downstream stress remained critical.";
   }
+  if (input.extraPressure > 0.3) {
+    return "Too much above-fair withdrawal is stressing downstream households.";
+  }
+  if (input.maintenanceRatio < 0.9) {
+    return "Maintenance is below fair allocation, and canal condition is slipping.";
+  }
+  if (input.downstreamStress > 60) {
+    return "Downstream stress is high; coordination is becoming fragile.";
+  }
+  if (input.groupTrust > 70) {
+    return "Trust is strengthening. Cooperative behavior is stabilizing outcomes.";
+  }
+  return "System is stable for now. Keep withdrawals fair and maintenance near target.";
 }
 
-function withDecisionAmounts(decision: PlayerDecision, preset: SimulationPreset): AgentDecision {
-  const maintenanceChoice: MaintenanceChoice =
-    decision.maintenanceChoice === "contribute" ? "contribute" : "skip";
-  const withdrawalChoice: WithdrawalChoice =
-    decision.withdrawalChoice === "low" || decision.withdrawalChoice === "high"
-      ? decision.withdrawalChoice
-      : "medium";
-  const requested = preset.withdrawalChoices[withdrawalChoice];
-
-  return {
-    withdrawalChoice,
-    maintenanceChoice,
-    withdrawalAmount: Math.min(requested, preset.withdrawalMaxValue),
-    maintenanceContributed: maintenanceChoice === "contribute"
-  };
+function buildStudentFeedback(
+  studentDecision: AgentDecision,
+  preset: SimulationPreset,
+  delta: StatusMetrics
+): string {
+  const takeDelta = roundTo(studentDecision.withdrawal - preset.fairTake, 2);
+  const maintenanceDelta = roundTo(studentDecision.maintenance - preset.fairMaintenance, 2);
+  return `You took ${studentDecision.withdrawal.toFixed(1)} water (fair ${preset.fairTake.toFixed(
+    1
+  )}, ${withSigned(takeDelta)}) and contributed ${studentDecision.maintenance.toFixed(
+    1
+  )} maintenance (fair ${preset.fairMaintenance.toFixed(1)}, ${withSigned(
+    maintenanceDelta
+  )}). Retaliation pressure ${retaliationLabel(studentDecision, preset)}. Canal ${withSigned(delta.canalCondition)}, stress ${withSigned(
+    delta.downstreamStress
+  )}, trust ${withSigned(delta.groupTrust)} this season.`;
 }
 
-function processChain(
-  chain: AgentState[],
-  decisions: Record<string, AgentDecision>,
-  startingFlow: number,
-  lossRate: number,
-  applyLossBeforeFirst: boolean
-): { received: Record<string, number>; remainingFlow: number } {
-  const received: Record<string, number> = {};
-  let flow = Math.max(0, startingFlow);
-  for (let i = 0; i < chain.length; i += 1) {
-    if (i > 0 || applyLossBeforeFirst) {
-      flow *= 1 - lossRate;
-    }
-    const request = decisions[chain[i].agentId]?.withdrawalAmount ?? 0;
-    const got = Math.min(flow, Math.max(0, request));
-    received[chain[i].agentId] = roundTo(got, 4);
-    flow = Math.max(0, flow - got);
+function computeStudentSelfishness(studentDecision: AgentDecision, preset: SimulationPreset): number {
+  const takeGap = Math.max(0, (studentDecision.withdrawal - preset.fairTake) / Math.max(1, preset.fairTake));
+  const maintenanceGap = Math.max(
+    0,
+    (preset.fairMaintenance - studentDecision.maintenance) / Math.max(0.1, preset.fairMaintenance)
+  );
+  return clamp(takeGap + maintenanceGap, 0, 2);
+}
+
+function computeRetaliationPressure(input: {
+  previous: number;
+  studentSelfishness: number;
+  extraPressure: number;
+  downstreamStress: number;
+  groupTrust: number;
+}): number {
+  const trustPenalty = input.groupTrust < 45 ? (45 - input.groupTrust) / 45 : 0;
+  const stressSignal = input.downstreamStress > 55 ? (input.downstreamStress - 55) / 45 : 0;
+  const next =
+    input.previous * 0.4 +
+    input.studentSelfishness * 0.45 +
+    input.extraPressure * 0.30 +
+    trustPenalty * 0.4 +
+    stressSignal * 0.4;
+  return roundTo(clamp(next, 0, 1.0), 4);
+}
+
+function retaliationLabel(studentDecision: AgentDecision, preset: SimulationPreset): string {
+  const selfishness = computeStudentSelfishness(studentDecision, preset);
+  if (selfishness >= 1.2) {
+    return "high";
   }
-  return {
-    received,
-    remainingFlow: roundTo(flow, 4)
-  };
-}
-
-function buildDefaultPreset(spec: CanonicalSpec): SimulationPreset {
-  const nAgents = spec.agents.ai_agents_count + 1;
-  return {
-    scenario: "Default Scenario",
-    seasonsPerRun: spec.simulation.seasons_per_run,
-    nAgents,
-    topology: spec.canal.topology,
-    branchSplitIndex: 3,
-    branchRatio: 0.6,
-    conveyanceLoss: spec.canal.conveyance_loss.default,
-    sanctionAmount: 2,
-    studentPosition: Math.floor((nAgents - 1) / 2),
-    strategyMix: normalizeStrategyMix(undefined, nAgents - 1, spec.agents.strategies),
-    withdrawalChoices: spec.mechanics.withdrawals.choices,
-    withdrawalMaxValue: spec.mechanics.withdrawals.max_value,
-    maintenanceCost: spec.mechanics.maintenance.cost_person_days,
-    maintenanceThresholdForSuccess: spec.mechanics.maintenance.threshold_for_success,
-    contributionThresholdSeasons: spec.mechanics.maintenance.contribution_threshold_seasons,
-    reputationBase: spec.mechanics.reputation.base,
-    reputationAlpha: spec.mechanics.reputation.alpha,
-    reputationBeta: spec.mechanics.reputation.beta,
-    detectionProbability: spec.mechanics.detection_probability,
-    failureProbabilityIncreasePerSeason: spec.mechanics.failure.failure_probability_increase_per_season,
-    rebuildCostPersonSeasons: spec.mechanics.failure.rebuild_cost_person_seasons,
-    fullAllotmentYield: spec.mechanics.yield.full_allotment_yield,
-    diminishingReturnsAboveAllotment: spec.mechanics.yield.diminishing_returns_above_allotment,
-    waterSupply: {
-      normal: spec.simulation.water_supply.normal,
-      droughtMin: spec.simulation.water_supply.drought_min,
-      droughtMax: spec.simulation.water_supply.drought_max,
-      droughtProbability: spec.simulation.water_supply.drought_probability
-    }
-  };
-}
-
-function normalizeStrategyMix(
-  candidate: StrategyName[] | undefined,
-  aiCount: number,
-  fallbackPool: StrategyName[]
-): StrategyName[] {
-  const source = (candidate && candidate.length > 0 ? candidate : fallbackPool).filter(Boolean);
-  const output: StrategyName[] = [];
-  for (let i = 0; i < aiCount; i += 1) {
-    output.push(source[i % source.length]);
+  if (selfishness >= 0.6) {
+    return "rising";
   }
-  return output;
+  return "low";
 }
 
-function normalizeTopology(
-  ...values: Array<TopologyType | undefined>
-): TopologyType {
-  for (const value of values) {
-    if (value === "linear" || value === "branch") {
-      return value;
-    }
-  }
-  return "linear";
+function withSigned(value: number): string {
+  const rounded = roundTo(value, 2);
+  return rounded >= 0 ? `+${rounded.toFixed(2)}` : rounded.toFixed(2);
 }
 
 function pickString(...values: Array<unknown>): string {
@@ -878,15 +944,6 @@ function pickString(...values: Array<unknown>): string {
   return "";
 }
 
-function pickBoolean(...values: Array<unknown>): boolean {
-  for (const value of values) {
-    if (typeof value === "boolean") {
-      return value;
-    }
-  }
-  return false;
-}
-
 function pickNumber(...values: Array<unknown>): number {
   for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value)) {
@@ -894,4 +951,13 @@ function pickNumber(...values: Array<unknown>): number {
     }
   }
   return 0;
+}
+
+function pickBoolean(...values: Array<unknown>): boolean {
+  for (const value of values) {
+    if (typeof value === "boolean") {
+      return value;
+    }
+  }
+  return false;
 }

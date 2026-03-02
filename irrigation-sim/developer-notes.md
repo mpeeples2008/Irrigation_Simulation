@@ -1,18 +1,31 @@
 # Developer Notes
 
+## Simplification Focus
+This mode intentionally reduces complexity to highlight three concepts only:
+- Upstream/downstream positional effects.
+- Cooperation via maintenance.
+- Coordination as a group survival condition.
+
 ## Tradeoffs
-- SVG animation is intentionally lightweight (flow dash animation and node labels) to keep rendering robust and accessible.
-- Branch routing is modeled with one trunk split and alternating assignment to two branches after split index.
-- Batch runs are client-only and CSV-only. ZIP export is intentionally omitted for simplicity and dependency control.
-- The app warns on large batch counts (`N > 200`) to communicate browser memory pressure risk.
+- Removed sanctions/reputation institutions, branch topology, and batch controls from the player loop.
+- Kept deterministic seeded randomness only for seasonal supply variation.
+- Replaced multi-chart analytics with three survival bars and a short narrative debrief per season.
+- Replaced binary choices with numeric player controls:
+  - water take amount vs fair target
+  - maintenance amount vs fair allocation
+  - selectable student canal position
+- Added a compact sticky top dashboard using bar-style season trends and a visible inequality metric (Gini).
+- Increased behavioral sensitivity: selfish player behavior now raises retaliation pressure, which shifts AI toward more aggressive next-season responses.
+- Added explicit per-phase commitment flow (`Lock Decision` before each step) so choices feel intentional.
+- Added a two-phase turn structure:
+  - water choice first
+  - revealed withdrawals second
+  - maintenance choice after reveal
+- Added prominent per-click impact feedback (`Season Impact` banner + `AI Response` panel).
+- Reframed scenarios as optional preset profiles and exposed rainfall variability + AI behavior standards as independently tunable controls.
 
 ## Engine Notes
-- Engine module is pure and has no DOM side-effects.
-- All stochastic operations use a seeded deterministic RNG.
-- Core behaviors are exposed as modular functions for direct unit testing:
-  - routing
-  - yield calculation
-  - reputation updates
-  - defection detection
-  - failure logic
-  - CSV export
+- Engine remains pure and browser-safe (no DOM side-effects).
+- Exported APIs are unchanged (`runSimulation`, `stepSeason`, CSV exporters).
+- CSV schema remains compatible with the existing column order.
+- Parameter sweep tooling is available in `scripts/sweep.ts` with npm commands for raw and summary analysis CSVs.

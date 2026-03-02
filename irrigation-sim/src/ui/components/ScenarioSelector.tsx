@@ -1,5 +1,4 @@
 import React from "react";
-import { TopologyType } from "../../engine/types";
 
 export interface ScenarioOption {
   key: string;
@@ -10,24 +9,20 @@ export interface ScenarioOption {
 interface ScenarioSelectorProps {
   options: ScenarioOption[];
   selectedKey: string;
-  topology: TopologyType;
   onScenarioChange: (key: string) => void;
-  onTopologyChange: (topology: TopologyType) => void;
 }
 
 export default function ScenarioSelector({
   options,
   selectedKey,
-  topology,
-  onScenarioChange,
-  onTopologyChange
+  onScenarioChange
 }: ScenarioSelectorProps): JSX.Element {
   const selected = options.find((option) => option.key === selectedKey) ?? options[0];
   return (
     <section className="panel">
-      <h2>Scenario</h2>
+      <h2>Preset Profile</h2>
       <label htmlFor="scenario-select" className="control-label">
-        Select narrative scenario
+        Pick a profile (defaults only)
       </label>
       <select
         id="scenario-select"
@@ -40,30 +35,12 @@ export default function ScenarioSelector({
           </option>
         ))}
       </select>
-      <p className="scenario-vignette">{selected?.vignette}</p>
-      <fieldset>
-        <legend>Canal topology</legend>
-        <label>
-          <input
-            type="radio"
-            name="topology"
-            value="linear"
-            checked={topology === "linear"}
-            onChange={() => onTopologyChange("linear")}
-          />
-          Linear
-        </label>
-        <label>
-          <input
-            type="radio"
-            name="topology"
-            value="branch"
-            checked={topology === "branch"}
-            onChange={() => onTopologyChange("branch")}
-          />
-          One branch
-        </label>
-      </fieldset>
+      <p className="scenario-vignette">{selected.vignette}</p>
+      <ul className="goal-list">
+        <li>Profiles are starting points.</li>
+        <li>Rainfall and AI standards are tunable below.</li>
+        <li>Apply tuning to reset with your custom settings.</li>
+      </ul>
     </section>
   );
 }
