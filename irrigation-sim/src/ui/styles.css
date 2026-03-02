@@ -459,6 +459,41 @@ select:focus-visible {
   color: var(--muted);
 }
 
+.goal-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.goal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.goal-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.goal-head select {
+  margin: 0;
+  width: 260px;
+  max-width: 100%;
+}
+
+.goal-summary {
+  margin: 0.35rem 0 0;
+  font-weight: 600;
+}
+
+.replay-row.baseline {
+  background: #edf7ff;
+}
+
 .table-wrap {
   overflow-x: auto;
   max-height: 230px;

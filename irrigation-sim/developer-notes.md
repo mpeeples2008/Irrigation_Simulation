@@ -14,6 +14,10 @@ This mode intentionally reduces complexity to highlight three concepts only:
   - water take amount vs fair target
   - maintenance amount vs fair allocation
   - selectable student canal position
+- Added end-of-run educational scaffolding:
+  - selectable learning goals with score + grade
+  - stronger debrief bullets that call out winners/losers and key tradeoffs
+  - same-seed role-switch replay table to isolate positional effects
 - Added a compact sticky top dashboard using bar-style season trends and a visible inequality metric (Gini).
 - Increased behavioral sensitivity: selfish player behavior now raises retaliation pressure, which shifts AI toward more aggressive next-season responses.
 - Added explicit per-phase commitment flow (`Lock Decision` before each step) so choices feel intentional.
